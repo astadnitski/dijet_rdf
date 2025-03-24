@@ -9,8 +9,9 @@ import produce_ratio
 import produce_responses
 import produce_time_evolution
 import produce_vetomaps
-from plotting import produce_plots
+# from plotting import produce_plots
 import skim
+import met
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='JEC4PROMPT Toolkit: \
@@ -211,6 +212,33 @@ def parse_arguments():
     skim_parser.add_argument("--correction_key", type=str, help="Key in the correction JSON file \
                              defining the corrections to be applied")
 
+    met_parser = subparsers.add_parser('met', help = 'Perform MET analysis')
+    met_parser.add_argument('-nt', '--n_threads', type = int,
+                            help = 'How many threads for multithreading')
+    met_parser.add_argument('-o', '--out', type = str, required = True, default = '',
+                            help = 'Output path')
+    met_parser.add_argument('-il', '--is_local', action = 'store_true',
+                             help = 'Run locally. If not set, will append \
+                             root://cms-xrd-global.cern.ch/ to filenames')
+    met_parser.add_argument('-pb', '--progress_bar', action = 'store_true',
+                           help = 'Show progress bar')
+    met_parser.add_argument('-ns', '--n_steps', type = int,
+                           help = 'Number of steps input files are grouped into')
+    met_parser.add_argument('-s', '--step', type = int,
+                           help = 'Step to be processed.')
+    
+    met_files = met_parser.add_mutually_exclusive_group(required = True)
+    met_files.add_argument('-fl', '--filelist', type = str,
+                           help = 'Comma-separated list of root files')
+    met_files.add_argument('-fp', '--filepaths', type = str,
+                           help = 'Comma-separated list of text files containing input files (one input file per line)')
+    
+    met_triggers = met_parser.add_mutually_exclusive_group()
+    met_triggers.add_argument('-tp', '--trigger_path', type = str,
+                              help = 'Path to trigger list')
+    met_triggers.add_argument('-tl', '--trigger_list', type = str,
+                              help = 'Input files separated by commas')
+
     # Parse command line arguments, overriding config file values
     args = parser.parse_args()
 
@@ -228,6 +256,10 @@ def parse_arguments():
         if args.dataset:
             print("--dataset is deprecated. Use --channel instead.")
             args.channel = args.dataset
+
+    elif args.subparser_name == 'met':
+        if not args.filelist and not args.filepaths:
+            raise ValueError('Filelist or filepath required')
 
     return args
 
@@ -247,6 +279,8 @@ if __name__ == "__main__":
         find_range.run(args)
     elif command == "hist":
         histograms.run(args)
+    elif command == 'met':
+        met.run(args)
     elif command == "produce_ratio":
         produce_ratio.run(args)
     elif command ==  "produce_responses":
