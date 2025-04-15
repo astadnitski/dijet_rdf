@@ -1,6 +1,9 @@
+import matplotlib.pyplot as mp
+import mplhep as hep
 import os
-from ROOT import gStyle#, gErrorIgnoreLevel, kWarning
-from ROOT import EnableImplicitMT, RDataFrame, RDF, TCanvas, TChain, TLegend
+import uproot
+
+from ROOT import gPad, EnableImplicitMT, RDataFrame, RDF, TChain, TCanvas, TFile, TEfficiency
 from processing_utils import file_read_lines
 from typing import List
 
@@ -13,44 +16,52 @@ def get_met(category, files, triggers, args, step = None):
             except Exception as ex: print(f'Skipping problematic run: {ex}')
     events_rdf = RDataFrame(events_chain)
     if args.progress_bar: RDF.Experimental.AddProgressBar(events_rdf)
-    bin_count, bin_min, bin_max = 150, 0, 3000
-    target = 'PuppiMET_pt'
-    pt_initial = events_rdf.Histo1D(('a_pt', f'{category} {target}', bin_count, bin_min, bin_max), target).Clone(category)
-    pt_cut, efficiency = [pt_initial], []
-    for trigger in triggers:
-        events_rdf_cut = events_rdf.Filter(trigger)
-        pt_hist = events_rdf_cut.Histo1D(('b_pt', f'{category} efficiency', bin_count, bin_min, bin_max), target)
-        pt_hist = pt_hist.Clone(trigger)
-        pt_cut.append(pt_hist)
-        eff_hist = pt_hist.Clone(trigger)
-        eff_hist.Divide(pt_initial)
-        efficiency.append(eff_hist)
-    colors = [1, 2, 3]
-    canvas_style = {'SetTitle': "'new_title'", 'SetLogx': 'False', 'SetLogy': 'True'}
-    hist_style = {'GetXaxis().SetRangeUser': '0, 3000',
-                  'GetXaxis().SetTitle': "'pT [GeV]'",
-                  'GetYaxis().SetTitle': "'events'"}
-    make_plot(pt_cut, f'{args.out}/{category}', 'test_plot.png', canvas_style, hist_style, colors)
-    canvas_style = {'SetTitle': "'new_title_1'", 'SetLogy': 'False'}
-    hist_style = {'GetYaxis().SetTitle': "'efficiency'"}
-    make_plot(efficiency, f'{args.out}/{category}', 'efficiency.png', canvas_style, hist_style, colors[1:])
+    details, target = ('temp', category, 150, 0, 3000), 'PuppiMET_pt'
+    pt_initial = events_rdf.Histo1D(details, target).Clone(f'{target} 0')
+    hists = {'pt': [pt_initial], 'eff': []}
+    TCanvas('', '', 300, 300).cd()
+    for t, trigger in enumerate(triggers):
+        pt_hist = events_rdf.Filter(trigger).Histo1D(details, target).Clone(f'{target} {t + 1}')
+        hists['pt'].append(pt_hist)
+        eff_hist = TEfficiency(pt_hist, pt_initial)
+        eff_hist.Draw('')
+        gPad.Update()
+        hists['eff'].append(eff_hist.GetPaintedGraph().Clone())
+    outfiles = {}
+    for key, value in hists.items():
+        outfile = f'{args.out}/{category}/{key}.root'
+        with TFile.Open(outfile, 'RECREATE') as hist_out:
+            hist_out.cd()
+            for hist in value: hist.Write()
+        outfiles[key] = outfile
+    hist_params = {'eff': {'title': f"'{category.replace('_', ' ')}'",
+                           'ylabel': "'Efficiency'", 'xlim': '0, 3000', 'xlabel': "r'$p_T$ [GeV]'"}}
+    hist_params['pt'] = hist_params['eff'].copy()
+    hist_params['pt']['ylabel'] = "'Events'"
+    hist_params['pt']['yscale'] = "'log'"
+    return outfiles, hist_params
 
-def make_plot(hists, out_dir, out_name, canvas_style, hist_style, colors):
-    gStyle.SetOptStat(0)
-    canvas = TCanvas('canvas', '', 750, 750)
-    legend = TLegend(0.2, 0.8, 0.9, 0.9)
-    for h, hist in enumerate(hists):
-        for key, value in hist_style.items(): exec(f'hist.{key}({value})')
-        hist.SetLineColor(colors[h])
-        hist.Draw('SAME')
-        short = hist.GetName().split('&&')[-1].strip()
-        legend.AddEntry(hist, short, 'l')
-    for key, value in canvas_style.items(): exec(f'canvas.{key}({value})')
-    legend.Draw()
-    canvas.SaveAs(f'{out_dir}/{out_name}')
+def plot_met(hist_filepath, hist_params):
+    file = uproot.open(hist_filepath)
+    for hist_name in file:
+        if 'eff' in hist_name:
+            hist_label = 'Efficiency ' + hist_name[-1]
+            (x_values, y_values) = file[hist_name].values()
+            y_low = file[hist_name].errors('low', 1)
+            y_high = file[hist_name].errors('high', 1)
+            mp.errorbar(x_values, y_values, [y_low, y_high],
+                        color = f'C{hist_label[-1]}', label = hist_label)
+        else:
+            hist_label = hist_name[:-2]
+            hep.histplot(file[hist_name],
+                         color = f'C{hist_label[-1]}', label = hist_label)
+    for key, value in hist_params.items(): exec(f'mp.{key}({value})')
+    mp.legend()
+    mp.savefig(hist_filepath.replace('root', 'png'))
+    mp.close()
 
 def run(args):
-    #gErrorIgnoreLevel = kWarning
+    hep.style.use('CMS')
     if args.n_threads: EnableImplicitMT(args.n_threads)
     files: List[str] = []
     if args.filepaths:
@@ -62,15 +73,11 @@ def run(args):
         category = '_'.join([l.split('/')[-1].replace('.root', '')
                              for l in args.filelist.split(',')])
     if args.n_steps is not None and args.step is not None:
-        n = args.n_steps
-        i = args.step
-        files = files[i::n]
+        files = files[args.step::args.n_steps]
     triggers: List[str] = []
     if args.trigger_list: triggers = args.trigger_list.split(',')
     elif args.trigger_path: triggers = file_read_lines(args.trigger_path)
-    if not os.path.exists(args.out): os.makedirs(args.out)
-    get_met(category, files, triggers, args, args.step)
-
-# def add_columns(rdf, columns):
-#     for column in columns: rdf = rdf.Define(column, '0.0')
-#     return rdf
+    for dir in [args.out, f'{args.out}/{category}']:
+        if not os.path.exists(dir): os.makedirs(dir)
+    hist_files, hist_params = get_met(category, files, triggers, args, args.step)
+    for key, value in hist_files.items(): plot_met(value, hist_params[key])
